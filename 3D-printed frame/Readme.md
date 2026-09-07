@@ -1,6 +1,7 @@
 # 3D-Printed Frame
 
 ![Isometric View](Isometric_View.png)
+
 This folder contains the **3D-printable mechanical frame and structural components** developed for the **ESP32-S3-Based 3D Scanning System**.
 
 The mechanical frame is designed to provide a stable structure for the 3D scanner and support the installation of the main hardware components, such as the **ESP32-S3 development board, stepper motor, motor driver, scanning components, and other mechanical parts**.

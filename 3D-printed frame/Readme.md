@@ -12,7 +12,6 @@ The design process focuses on creating a compact, stable, and practical structur
 
 * **3D Models** – STL files prepared for 3D printing.
 * **CAD Files** – Original mechanical design files created using Shapr3D.
-* **Assembly** – Models showing the arrangement and assembly of the mechanical components.
 * **Reference Images** – Images of the mechanical design and different views of the 3D scanner.
 
 The mechanical frame is an important part of the system because it ensures proper component positioning and provides a stable platform for the 3D scanning process.

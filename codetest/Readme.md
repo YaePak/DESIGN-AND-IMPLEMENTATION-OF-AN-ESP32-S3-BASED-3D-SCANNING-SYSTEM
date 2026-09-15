@@ -16,7 +16,8 @@ The code is used to verify each component before integrating it into the main sy
 ## Tools
 
 * Arduino IDE
-* PlatformIO
+* PlatformIDE
+* VSCode 
 * ESP32-S3 N16R8
 
 ## Test Purpose

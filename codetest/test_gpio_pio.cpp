@@ -1,15 +1,3 @@
-/*
-  Test GPIO — Nút HOME
-  ------------------------------------------------
-  Sơ đồ chân mới chỉ còn 1 nút "HOME" (GPIO7), không còn công tắc hành
-  trình riêng. File này chỉ kiểm tra đúng 1 chân input đó.
-
-  Cần nối: nút HOME vào GPIO7 + GND. KHÔNG cần nối gì khác.
-
-  Cách test: mở Serial Monitor (115200 baud), nhấn/thả nút, quan sát
-  trạng thái đổi ngay theo thời gian thực.
-*/
-
 #include <Arduino.h>
 
 const int PIN_HOME_BUTTON = 7;   // nối xuống GND khi nhấn (INPUT_PULLUP)

@@ -1,32 +1,3 @@
-/*
-  Test TF-Luna qua UART
-  ------------------------------------------------
-  Kiểm tra cảm biến TF-Luna hoạt động đúng qua UART, tách riêng khỏi motor
-  và các chân GPIO khác. Chỉ cần nối TF-Luna, không cần gì khác.
-
-  Nối: TXD của TF-Luna -> GPIO17 (ESP32 RX)
-       RXD của TF-Luna -> GPIO18 (ESP32 TX)
-
-  In LIÊN TỤC, KHÔNG lọc gì cả — đây là công cụ chẩn đoán, cần thấy đúng
-  số thô để tự đánh giá, khác với firmware chính vốn đã lọc theo strength.
-  Dùng để: xác nhận cảm biến có phát khung dữ liệu hợp lệ không, xem
-  khoảng cách đo có đúng thực tế không, và tìm ngưỡng
-  TFLUNA_MIN_VALID_STRENGTH hợp lý (đưa tay/vật lại gần xa để xem độ mạnh
-  tín hiệu thay đổi thế nào).
-
-  QUY TRÌNH ĐO — làm lần lượt 4 tình huống, ghi lại khoảng strength mỗi lần:
-    1. Chĩa vào vật thể ở khoảng cách quét thật (~28cm), xoay vài góc.
-       -> Đây là vùng "TỐT", cần giữ lại.
-    2. Chĩa vào phần TỐI MÀU NHẤT của vật.
-       -> Giá trị tốt thấp nhất, ngưỡng phải nằm DƯỚI mức này.
-    3. Chĩa vào khoảng không, không có vật trong 1-2m.
-       -> Vùng "RÁC", cần loại bỏ.
-    4. Chĩa vào vật ở góc rất nghiêng (gần song song với tia).
-       -> Trường hợp khó nhất, hay gặp ở phần dốc đứng của vật thể.
-  Chọn ngưỡng nằm giữa giá trị thấp nhất của tình huống 1-2 và cao nhất
-  của tình huống 3.
-*/
-
 #include <Arduino.h>
 
 const int PIN_TFLUNA_RX = 17;   // ESP32 RX <- chân TXD của TF-Luna

@@ -1,23 +1,3 @@
-/*
-  Test driver A4988 + động cơ bước (bàn xoay + trục Z)
-  ------------------------------------------------------
-  Kiểm tra riêng 2 driver A4988 theo sơ đồ chân MỚI, tách khỏi TF-Luna và
-  WiFi. Nhấn nút HOME để bắt đầu 1 chu kỳ test, quan sát động cơ quay
-  bằng mắt.
-
-  Cần nối: 2 driver A4988 + 2 động cơ NEMA17, nút HOME vào GPIO7.
-  KHÔNG cần TF-Luna, KHÔNG cần WiFi.
-
-  Chu kỳ test (mỗi lần nhấn nút):
-    1. Bàn xoay: quay THUẬN đúng 1 vòng -> dừng 1s -> quay NGƯỢC đúng 1 vòng
-    2. Trục Z  : quay THUẬN đúng 1 vòng -> dừng 1s -> quay NGƯỢC đúng 1 vòng
-
-  CÁCH KIỂM TRA BẰNG MẮT: đánh dấu 1 điểm tham chiếu trên trục động cơ
-  trước khi test. Sau thuận + ngược đúng 1 vòng, dấu đó phải về CHÍNH XÁC
-  vị trí ban đầu — lệch đi là trượt bước (giảm STEP_DELAY_US, kiểm tra
-  Vref, kiểm tra cơ khí có kẹt không).
-*/
-
 #include <Arduino.h>
 
 // A4988 — Bàn xoay
@@ -31,7 +11,6 @@ const int PIN_Z_EN   = 12;
 // Nút kích hoạt chu kỳ test
 const int PIN_HOME_BUTTON = 7;
 
-// Khớp với cấu hình đang dùng trong firmware chính — đổi theo nếu khác.
 const int MOTOR_STEPS_PER_REV = 200;   // NEMA17 1,8 do/buoc
 const int MICROSTEPPING       = 16;    // TODO: khop voi jumper MS1/MS2/MS3 that tren A4988
 const int TOTAL_STEPS_PER_REV = MOTOR_STEPS_PER_REV * MICROSTEPPING;

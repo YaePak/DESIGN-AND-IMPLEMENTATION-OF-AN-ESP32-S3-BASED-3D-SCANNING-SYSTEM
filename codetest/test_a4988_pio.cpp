@@ -1,37 +1,35 @@
 /*
   Test driver A4988 + động cơ bước (bàn xoay + trục Z)
   ------------------------------------------------------
-  Kiểm tra riêng 2 driver A4988, tách khỏi TF-Luna và WiFi. Nhấn nút Start
-  để bắt đầu 1 chu kỳ test, quan sát động cơ quay bằng mắt.
+  Kiểm tra riêng 2 driver A4988 theo sơ đồ chân MỚI, tách khỏi TF-Luna và
+  WiFi. Nhấn nút HOME để bắt đầu 1 chu kỳ test, quan sát động cơ quay
+  bằng mắt.
 
-  Cần nối: 2 driver A4988 + 2 động cơ NEMA17, nút Start vào GPIO1.
+  Cần nối: 2 driver A4988 + 2 động cơ NEMA17, nút HOME vào GPIO7.
   KHÔNG cần TF-Luna, KHÔNG cần WiFi.
 
   Chu kỳ test (mỗi lần nhấn nút):
     1. Bàn xoay: quay THUẬN đúng 1 vòng -> dừng 1s -> quay NGƯỢC đúng 1 vòng
     2. Trục Z  : quay THUẬN đúng 1 vòng -> dừng 1s -> quay NGƯỢC đúng 1 vòng
 
-  CÁCH KIỂM TRA BẰNG MẮT — quan trọng nhất của bài test này:
-  Trước khi nhấn nút, đánh dấu 1 điểm tham chiếu trên trục động cơ (băng
-  keo nhỏ hoặc bút lông). Sau khi quay thuận rồi quay ngược đúng 1 vòng,
-  dấu đó PHẢI quay về CHÍNH XÁC vị trí ban đầu. Nếu lệch đi (dù chỉ một
-  chút), động cơ đang bị trượt bước — cần giảm STEP_DELAY_US (quay chậm
-  lại), kiểm tra Vref trên A4988 (dòng cấp có đủ không), hoặc kiểm tra cơ
-  khí có bị kẹt/ma sát không.
-
-  Cũng nên lắng nghe: động cơ chạy êm là bình thường; tiếng rít/khục khặc
-  bất thường là dấu hiệu trượt bước hoặc sai điện áp Vref.
+  CÁCH KIỂM TRA BẰNG MẮT: đánh dấu 1 điểm tham chiếu trên trục động cơ
+  trước khi test. Sau thuận + ngược đúng 1 vòng, dấu đó phải về CHÍNH XÁC
+  vị trí ban đầu — lệch đi là trượt bước (giảm STEP_DELAY_US, kiểm tra
+  Vref, kiểm tra cơ khí có kẹt không).
 */
 
 #include <Arduino.h>
 
+// A4988 — Bàn xoay
+const int PIN_TABLE_DIR  = 4;
 const int PIN_TABLE_STEP = 5;
-const int PIN_TABLE_DIR  = 6;
-const int PIN_TABLE_EN   = 7;
-const int PIN_Z_STEP     = 8;
-const int PIN_Z_DIR      = 9;
-const int PIN_Z_EN       = 14;
-const int PIN_BUTTON     = 1;
+const int PIN_TABLE_EN   = 6;
+// A4988 — Trục Z
+const int PIN_Z_DIR  = 10;
+const int PIN_Z_STEP = 11;
+const int PIN_Z_EN   = 12;
+// Nút kích hoạt chu kỳ test
+const int PIN_HOME_BUTTON = 7;
 
 // Khớp với cấu hình đang dùng trong firmware chính — đổi theo nếu khác.
 const int MOTOR_STEPS_PER_REV = 200;   // NEMA17 1,8 do/buoc
@@ -57,9 +55,9 @@ void spinMotor(const char* name, int stepPin, int dirPin, bool forward, int step
 
 void waitForButton() {
   Serial.println();
-  Serial.println("Nhan nut Start (GPIO1) de bat dau 1 chu ky test...");
-  while (digitalRead(PIN_BUTTON) == HIGH) delay(50);   // HIGH = chua nhan
-  delay(200);                                          // chong rung
+  Serial.println("Nhan nut HOME (GPIO7) de bat dau 1 chu ky test...");
+  while (digitalRead(PIN_HOME_BUTTON) == HIGH) delay(50);   // HIGH = chua nhan
+  delay(200);                                               // chong rung
 }
 
 void setup() {
@@ -72,7 +70,7 @@ void setup() {
   pinMode(PIN_Z_STEP,     OUTPUT);
   pinMode(PIN_Z_DIR,      OUTPUT);
   pinMode(PIN_Z_EN,       OUTPUT);
-  pinMode(PIN_BUTTON,     INPUT_PULLUP);
+  pinMode(PIN_HOME_BUTTON, INPUT_PULLUP);
 
   digitalWrite(PIN_TABLE_EN, LOW);   // EN cua A4988 tich cuc muc THAP -> LOW = bat driver
   digitalWrite(PIN_Z_EN, LOW);

@@ -1,6 +1,6 @@
 # Stepper Motor and A4988 Driver
 
-![A4988&Stepper_Motor](Image\A4988&Stepper_Motor.webp)
+![A4988&Stepper_Motor](Image/A4988&Stepper_Motor.webp)
 
 ## Stepper Motor
 

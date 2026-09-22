@@ -1,6 +1,6 @@
 # Component Description — TF-Luna ToF LiDAR Sensor
 
-![TF_Luna](Image\TF_Luna.webp)
+![TF_Luna](Image/TF_Luna.webp)
 
 ## What It Is
 

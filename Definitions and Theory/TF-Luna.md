@@ -1,5 +1,7 @@
 # Component Description — TF-Luna ToF LiDAR Sensor
 
+![TF_Luna](Image\TF_Luna.webp)
+
 ## What It Is
 
 The TF-Luna is a compact, solid-state single-point LiDAR distance sensor made by Benewake. Unlike simple infrared (IR) distance sensors that estimate distance through triangulation of a reflected light spot, the TF-Luna uses the **Time-of-Flight (ToF) principle**: it emits a modulated near-infrared laser pulse and measures the time it takes for the light to reflect off a surface and return to the sensor. That time is then converted directly into a distance value.

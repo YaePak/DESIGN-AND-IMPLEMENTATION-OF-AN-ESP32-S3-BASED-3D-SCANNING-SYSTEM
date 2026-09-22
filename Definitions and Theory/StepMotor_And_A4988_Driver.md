@@ -1,5 +1,7 @@
 # Stepper Motor and A4988 Driver
 
+![A4988&Stepper_Motor](Image\A4988&Stepper_Motor.webp)
+
 ## Stepper Motor
 
 A **Stepper Motor** is an electric motor that rotates in precise and discrete steps instead of continuous rotation. It is commonly used in applications that require accurate position and movement control.

@@ -42,7 +42,8 @@ const float D_ANGLE          = 2.0 * PI / STEPS_PER_REV;
 const int   STEPS_PER_SAMPLE = TOTAL_STEPS_PER_REV / STEPS_PER_REV;
 
 const float Z_LAYER_MM = 1.0;
-const float Z_TRAVEL_LIMIT_MM = 150.0;
+
+const float Z_TRAVEL_LIMIT_MM = 200.0;
 
 const int   Z_STEPS_PER_LAYER = (int)((Z_LAYER_MM / LEAD_SCREW_PITCH_MM) * TOTAL_STEPS_PER_REV);
 
@@ -74,11 +75,50 @@ const long  CAL_Z_STEPS     = (long)((CAL_Z_STEP_MM / LEAD_SCREW_PITCH_MM) * TOT
 const BaseType_t CORE_REALTIME = 1;
 const BaseType_t CORE_COMM     = 0;
 
+const uint32_t BUTTON_DEBOUNCE_MS = 30;
+const uint32_t BUTTON_LONG_MS     = 2000;
+
+const bool DISABLE_DRIVERS_ON_FAULT = false;
+
+long  mmToSteps(float mm)   { return (long)(mm / LEAD_SCREW_PITCH_MM * TOTAL_STEPS_PER_REV + 0.5f); }
+float stepsToMm(long steps) { return steps * LEAD_SCREW_PITCH_MM / TOTAL_STEPS_PER_REV; }
+
+const long Z_MAX_STEPS = mmToSteps(Z_TRAVEL_LIMIT_MM);
+
+enum FaultCode {
+  FAULT_NONE = 0,
+  FAULT_SOFT_MAX,      // lenh muon dua Z vuot Z_TRAVEL_LIMIT_MM
+  FAULT_USER_STOP      // nhan nut HOME / go "stop" khi dang chay
+};
+
+volatile FaultCode g_fault          = FAULT_NONE;
+volatile bool      g_abortRequested = false;   // core 0 bat, core 1 doc moi xung
+volatile long      g_zPosSteps      = 0;       // vi tri Z hien tai (xung), 0 = day
+volatile bool      g_zHomed         = false;   // true khi da co z=0
+volatile bool      g_busy           = false;   // motorTask dang chay lenh
+
+const char* faultName(FaultCode f) {
+  switch (f) {
+    case FAULT_NONE:      return "KHONG LOI";
+    case FAULT_SOFT_MAX:  return "VUOT GIOI HAN TRUC Z (Z_TRAVEL_LIMIT_MM)";
+    case FAULT_USER_STOP: return "DA DUNG (nut HOME / lenh stop)";
+  }
+  return "?";
+}
+
+enum CmdType { CMD_START, CMD_UP, CMD_DOWN, CMD_ZERO, CMD_CLEAR, CMD_OFF };
+struct MotorCmd {
+  CmdType type;
+  float   arg;
+};
+QueueHandle_t cmdQueue = NULL;
+
 struct RawSample {
   float radiusMm;
   float angleRad;
   float zMm;
   bool  endOfScan;
+  bool  aborted;     // true = quet bi dung giua chung
 };
 const int QUEUE_LENGTH = 256;
 QueueHandle_t rawQueue = NULL;
@@ -137,6 +177,24 @@ float readDistanceCM() {
   return (float)dist;
 }
 
+void enableDrivers() {
+  digitalWrite(PIN_TABLE_EN, LOW);
+  digitalWrite(PIN_Z_EN, LOW);
+}
+
+void disableDrivers() {
+  digitalWrite(PIN_TABLE_EN, HIGH);
+  digitalWrite(PIN_Z_EN, HIGH);
+}
+
+void raiseFault(FaultCode code, const char* detail) {
+  if (g_fault == FAULT_NONE) g_fault = code;   // giu lai loi DAU TIEN
+  Serial.println();
+  Serial.printf("!!! %s  (%s)  z=%.2f mm\n", faultName(code), detail, stepsToMm(g_zPosSteps));
+  Serial.println("!!! May dung yen tai cho. Nhan HOME de quet lai, giu HOME 2s de nha motor.");
+  if (DISABLE_DRIVERS_ON_FAULT) disableDrivers();
+}
+
 void stepPulse(int stepPin) {
   digitalWrite(stepPin, HIGH);
   delayMicroseconds(5);
@@ -144,37 +202,85 @@ void stepPulse(int stepPin) {
   delayMicroseconds(STEP_DELAY_US);
 }
 
-void rotateTableSteps(long steps) {
+bool rotateTableSteps(long steps) {
   digitalWrite(PIN_TABLE_DIR, TABLE_DIR_LEVEL);
   for (long i = 0; i < steps; i++) {
+    if (g_abortRequested) {
+      raiseFault(FAULT_USER_STOP, "khi dang quay ban xoay");
+      return false;
+    }
     stepPulse(PIN_TABLE_STEP);
     if ((i + 1) % YIELD_EVERY_STEPS == 0) delay(1);
   }
+  return true;
 }
 
-void moveZSteps(long steps, bool up) {
+bool moveZSteps(long steps, bool up) {
+  if (steps <= 0) return true;
+  enableDrivers();
   const int downLevel = (Z_UP_LEVEL == HIGH) ? LOW : HIGH;
   digitalWrite(PIN_Z_DIR, up ? Z_UP_LEVEL : downLevel);
+  delayMicroseconds(5);   // A4988: DIR on dinh truoc canh len STEP
+
   for (long i = 0; i < steps; i++) {
+    if (g_abortRequested) {
+      raiseFault(FAULT_USER_STOP, "khi dang chay truc Z");
+      return false;
+    }
+    if (g_zHomed) {
+      if (up && g_zPosSteps >= Z_MAX_STEPS) {
+        raiseFault(FAULT_SOFT_MAX, "lenh muon di qua dinh truc");
+        return false;
+      }
+      if (!up && g_zPosSteps <= 0) {
+        Serial.println("[z] Da o z=0 (day truc), khong ha them.");
+        return true;
+      }
+    }
     stepPulse(PIN_Z_STEP);
+    g_zPosSteps = g_zPosSteps + (up ? 1 : -1);
     if ((i + 1) % YIELD_EVERY_STEPS == 0) delay(1);
   }
+  return true;
 }
 
-void stepTurntable() { rotateTableSteps(STEPS_PER_SAMPLE); }
-void stepZAxis()     { moveZSteps(Z_STEPS_PER_LAYER, true); }
-
-void disableDrivers() {
-  digitalWrite(PIN_TABLE_EN, HIGH);
-  digitalWrite(PIN_Z_EN, HIGH);
+bool moveZToSteps(long target) {
+  long delta = target - g_zPosSteps;
+  if (delta > 0) return moveZSteps(delta, true);
+  if (delta < 0) return moveZSteps(-delta, false);
+  return true;
 }
 
-void waitForHomeButton() {
-  Serial.println("Dat vat len GIUA ban xoay, ha truc Z xuong THAP NHAT (ngang mat ban xoay),");
-  Serial.println("roi nhan nut HOME (GPIO7). May se do nguong strength, tu ve z=0, roi moi quet.");
-  while (digitalRead(PIN_HOME_BUTTON) == HIGH) delay(50);
-  delay(200);
-  Serial.println("Da nhan HOME.");
+bool stepTurntable() { return rotateTableSteps(STEPS_PER_SAMPLE); }
+bool stepZAxis()     { return moveZSteps(Z_STEPS_PER_LAYER, true); }
+
+void printStatus() {
+  Serial.println("----- TRANG THAI -----");
+  Serial.printf("Trang thai: %s\n", g_busy ? "DANG CHAY" : "dung yen");
+  Serial.printf("Loi       : %s\n", faultName(g_fault));
+  Serial.printf("Vi tri Z  : %.2f mm (%ld xung)  %s\n", stepsToMm(g_zPosSteps), (long)g_zPosSteps,
+                g_zHomed ? "[da co z=0]" : "[CHUA co z=0 - nhan HOME khi Z o thap nhat]");
+  Serial.printf("Gioi han  : 0 .. %.1f mm\n", Z_TRAVEL_LIMIT_MM);
+  Serial.printf("Strength  : %d\n", g_minValidStrength);
+  Serial.println("----------------------");
+}
+
+void printHelp() {
+  Serial.println("----- NUT HOME -----");
+  Serial.println("  Nhan khi dung yen : bat dau quet");
+  Serial.println("  Nhan khi dang chay: DUNG ngay, dung yen tai cho");
+  Serial.println("  Giu 2 giay        : nha motor de chinh tay truc Z");
+  Serial.println("----- LENH Serial Monitor (115200, Enter) -----");
+  Serial.println("  stop       dung ngay (giong nhan HOME khi dang chay)");
+  Serial.println("  scan       bat dau quet (giong nhan HOME khi dung yen)");
+  Serial.println("  status     xem trang thai");
+  Serial.println("  clear      xoa thong bao loi");
+  Serial.println("  up <mm>    nang Z <mm>  (van bi gioi han mem chan)");
+  Serial.println("  down <mm>  ha Z <mm>");
+  Serial.println("  zero       coi vi tri hien tai la z=0");
+  Serial.println("  off        nha motor (giong giu HOME 2 giay)");
+  Serial.println("  help       in danh sach nay");
+  Serial.println("-----------------------------------------------");
 }
 
 enum CalClass { CAL_UNUSABLE, CAL_OBJECT, CAL_BACKGROUND };
@@ -193,6 +299,7 @@ struct CalResult {
   int  objLow;
   int  bgHigh;
   int  threshold;
+  bool aborted;
 };
 
 static void sortInts(int* a, int n) {
@@ -208,7 +315,7 @@ static int percentileInt(const int* sorted, int n, float p) {
 }
 
 CalResult computeStrengthThreshold(int* obj, int nObj, int* bg, int nBg) {
-  CalResult r = { false, false, 0, -1, TFLUNA_DEFAULT_MIN_STRENGTH };
+  CalResult r = { false, false, 0, -1, TFLUNA_DEFAULT_MIN_STRENGTH, false };
   if (nObj < CAL_MIN_OBJ_SAMPLES) return r;
 
   sortInts(obj, nObj);
@@ -239,7 +346,6 @@ CalResult calibrateStrength() {
   Serial.println("[cal] Bat dau do nguong strength: quay 45 do -> nang Z 1cm, lap lai...");
   int  nObj = 0, nBg = 0;
   int  emptyStops = 0;
-  long zStepsUp = 0;
 
   for (int stopIdx = 0; ; stopIdx++) {
     float zMm = stopIdx * CAL_Z_STEP_MM;
@@ -274,9 +380,11 @@ CalResult calibrateStrength() {
       break;
     }
 
-    rotateTableSteps(CAL_TABLE_STEPS);
-    moveZSteps(CAL_Z_STEPS, true);
-    zStepsUp += CAL_Z_STEPS;
+    if (!rotateTableSteps(CAL_TABLE_STEPS) || !moveZSteps(CAL_Z_STEPS, true)) {
+      Serial.println("[cal] HUY hieu chinh. May dung yen, KHONG tu ha Z.");
+      CalResult bad = { false, false, 0, -1, g_minValidStrength, true };
+      return bad;
+    }
   }
 
   CalResult r = computeStrengthThreshold(calObj, nObj, calBg, nBg);
@@ -299,27 +407,22 @@ CalResult calibrateStrength() {
   Serial.println("=================================================");
   g_minValidStrength = r.threshold;
 
-  Serial.printf("[cal] Dua truc Z ve z=0 (%ld xung)...\n", zStepsUp);
-  moveZSteps(zStepsUp, false);
+  Serial.printf("[cal] Dua truc Z ve z=0 (dang o %.1f mm)...\n", stepsToMm(g_zPosSteps));
+  if (!moveZToSteps(0)) {
+    r.aborted = true;
+    return r;
+  }
   Serial.println("[cal] Da ve z=0.");
   return r;
 }
 
-void motorTask(void* pv) {
-  waitForHomeButton();
-
-  if (AUTO_CALIBRATE_STRENGTH) {
-    calibrateStrength();
-  } else {
-    Serial.printf("[cal] Bo qua hieu chinh, dung nguong mac dinh %d.\n", g_minValidStrength);
-  }
-
+bool runScan() {
   Serial.println("[core1] Bat dau quet toa do tu z=0.");
   uint32_t startMs = millis();
-  int  emptyLayers  = 0;
-  long scanZStepsUp = 0;
+  int  emptyLayers = 0;
+  bool aborted     = false;
 
-  for (int layer = 0; ; layer++) {
+  for (int layer = 0; !aborted; layer++) {
     float z = layer * Z_LAYER_MM;
 
     int validThisLayer = 0;
@@ -331,14 +434,15 @@ void motorTask(void* pv) {
         float rMm = (DISTANCE_TO_CENTER_CM - d) * 10.0f;
         if (rMm > 0 && rMm <= MAX_RADIUS_MM) {
           validThisLayer++;
-          RawSample s = { rMm, angle, z, false };
+          RawSample s = { rMm, angle, z, false, false };
           xQueueSend(rawQueue, &s, pdMS_TO_TICKS(5000));
         }
       }
 
       angle += D_ANGLE;
-      stepTurntable();
+      if (!stepTurntable()) { aborted = true; break; }
     }
+    if (aborted) break;
 
     if (z >= Z_MIN_SCAN_MM) {
       if (validThisLayer == 0) {
@@ -356,26 +460,196 @@ void motorTask(void* pv) {
       break;
     }
 
-    stepZAxis();
-    scanZStepsUp += Z_STEPS_PER_LAYER;
+    if (!stepZAxis()) { aborted = true; break; }
+
     if ((layer + 1) % 10 == 0) {
       Serial.printf("[core1] layer %d done (z=%.0fmm), %lu s elapsed\n",
                     layer + 1, z, (millis() - startMs) / 1000);
     }
   }
 
-  RawSample endMarker = { 0, 0, 0, true };
-  xQueueSend(rawQueue, &endMarker, portMAX_DELAY);
-  Serial.println("[core1] Motion complete.");
+  RawSample endMarker = { 0, 0, 0, true, aborted };
+  xQueueSend(rawQueue, &endMarker, pdMS_TO_TICKS(2000));
 
-  if (RETURN_Z_AFTER_SCAN && scanZStepsUp > 0) {
-    Serial.printf("[core1] Dang ha truc Z ve z=0 (%ld xung)... cho truc Z dung han.\n", scanZStepsUp);
-    moveZSteps(scanZStepsUp, false);
-    Serial.println("[core1] Da ve z=0. San sang cho lan quet tiep theo.");
+  if (aborted) {
+    Serial.println("[core1] Quet bi DUNG. May dung yen tai cho, cho lenh tiep theo.");
+    return false;
   }
 
+  Serial.println("[core1] Motion complete.");
+  if (RETURN_Z_AFTER_SCAN && g_zPosSteps > 0) {
+    Serial.printf("[core1] Dang ha truc Z ve z=0 (dang o %.1f mm)...\n", stepsToMm(g_zPosSteps));
+    if (!moveZToSteps(0)) return false;
+    Serial.println("[core1] Da ve z=0. Nhan HOME de quet lan tiep theo.");
+  }
   disableDrivers();
-  vTaskDelete(NULL);
+  return true;
+}
+
+void startScan() {
+  if (g_fault != FAULT_NONE) {
+    Serial.printf("Xoa trang thai '%s'.\n", faultName(g_fault));
+    g_fault = FAULT_NONE;
+  }
+  enableDrivers();
+
+  if (!g_zHomed) {
+    g_zPosSteps = 0;
+    g_zHomed    = true;
+    Serial.println("Lay vi tri hien tai lam z=0 (truc Z phai dang o THAP NHAT).");
+  } else if (g_zPosSteps != 0) {
+    Serial.printf("Dua Z ve z=0 truoc khi quet (dang o %.1f mm)...\n", stepsToMm(g_zPosSteps));
+    if (!moveZToSteps(0)) return;
+  }
+
+  if (AUTO_CALIBRATE_STRENGTH) {
+    CalResult c = calibrateStrength();
+    if (c.aborted) return;
+  } else {
+    Serial.printf("[cal] Bo qua hieu chinh, dung nguong mac dinh %d.\n", g_minValidStrength);
+  }
+  runScan();
+}
+
+void handleCommand(const MotorCmd& c) {
+  switch (c.type) {
+    case CMD_START:
+      startScan();
+      return;
+
+    case CMD_UP:
+    case CMD_DOWN: {
+      float mm = c.arg;
+      if (mm <= 0) { Serial.println("Can so mm > 0, vd: up 5"); return; }
+      if (mm > Z_TRAVEL_LIMIT_MM) mm = Z_TRAVEL_LIMIT_MM;
+      if (!g_zHomed) Serial.println("[z] Chu y: chua co z=0 -> gioi han mem dang TAT, chi di dung so mm da go.");
+      bool up = (c.type == CMD_UP);
+      Serial.printf("[z] %s %.2f mm...\n", up ? "Nang" : "Ha", mm);
+      if (moveZSteps(mmToSteps(mm), up))
+        Serial.printf("[z] Xong. z=%.2f mm\n", stepsToMm(g_zPosSteps));
+      return;
+    }
+
+    case CMD_ZERO:
+      g_zPosSteps = 0;
+      g_zHomed    = true;
+      Serial.println("Da dat vi tri hien tai la z=0.");
+      return;
+
+    case CMD_CLEAR:
+      g_fault = FAULT_NONE;
+      Serial.println("Da xoa thong bao loi.");
+      printStatus();
+      return;
+
+    case CMD_OFF:
+      disableDrivers();
+      g_zHomed = false;
+      Serial.println("Da NHA motor. Chinh truc Z bang tay xuong THAP NHAT, roi nhan HOME de quet (vi tri do = z=0).");
+      return;
+  }
+}
+
+void motorTask(void* pv) {
+  Serial.println("Dat vat len GIUA ban xoay, ha truc Z xuong THAP NHAT (ngang mat ban xoay),");
+  Serial.println("roi nhan nut HOME (GPIO7). May se do nguong strength, tu ve z=0, roi moi quet.");
+  printHelp();
+
+  for (;;) {
+    MotorCmd cmd;
+    if (xQueueReceive(cmdQueue, &cmd, portMAX_DELAY) != pdTRUE) continue;
+    g_abortRequested = false;   // lenh dung cu khong anh huong lenh moi
+    g_busy = true;
+    handleCommand(cmd);
+    g_busy = false;
+  }
+}
+
+void queueCmd(CmdType t, float arg = 0) {
+  MotorCmd c;
+  c.type = t;
+  c.arg  = arg;
+  if (g_busy) Serial.println(">> May dang chay, lenh se chay sau khi xong (nhan HOME / go 'stop' de dung ngay).");
+  if (xQueueSend(cmdQueue, &c, 0) != pdTRUE) Serial.println(">> Hang doi lenh day, bo qua.");
+}
+
+void pollHomeButton() {
+  static int      lastRaw  = HIGH;
+  static int      stable   = HIGH;
+  static uint32_t tChange  = 0;
+  static uint32_t tPress   = 0;
+  static bool     consumed = false;
+
+  int raw = digitalRead(PIN_HOME_BUTTON);
+  uint32_t now = millis();
+  if (raw != lastRaw) { lastRaw = raw; tChange = now; }
+
+  if (raw != stable && now - tChange >= BUTTON_DEBOUNCE_MS) {
+    stable = raw;
+    if (stable == LOW) {                       // vua nhan xuong
+      tPress   = now;
+      consumed = false;
+      if (g_busy) {
+        g_abortRequested = true;
+        consumed = true;
+        Serial.println(">> Nut HOME: DUNG MAY");
+      }
+    } else if (!consumed) {                    // nha ra sau lan nhan ngan
+      Serial.println(">> Nut HOME: BAT DAU QUET");
+      queueCmd(CMD_START);
+    }
+  }
+
+  if (stable == LOW && !consumed && now - tPress >= BUTTON_LONG_MS) {
+    consumed = true;
+    Serial.println(">> Giu nut HOME 2s: NHA MOTOR");
+    queueCmd(CMD_OFF);
+  }
+}
+
+void processLine(char* line) {
+  for (char* p = line; *p; p++) *p = tolower(*p);
+  char word[16] = {0};
+  float arg = 0;
+  int n = sscanf(line, "%15s %f", word, &arg);
+  if (n < 1) return;
+
+  if (!strcmp(word, "stop") || !strcmp(word, "s")) {
+    g_abortRequested = true;
+    Serial.println(g_busy ? ">> STOP: dang dung may..." : ">> May dang dung yen.");
+    return;
+  }
+  if (!strcmp(word, "status")) { printStatus(); return; }
+  if (!strcmp(word, "help") || !strcmp(word, "?")) { printHelp(); return; }
+
+  if      (!strcmp(word, "scan"))  queueCmd(CMD_START);
+  else if (!strcmp(word, "up"))    queueCmd(CMD_UP, arg);
+  else if (!strcmp(word, "down"))  queueCmd(CMD_DOWN, arg);
+  else if (!strcmp(word, "zero"))  queueCmd(CMD_ZERO);
+  else if (!strcmp(word, "clear")) queueCmd(CMD_CLEAR);
+  else if (!strcmp(word, "off"))   queueCmd(CMD_OFF);
+  else Serial.printf("Lenh khong hop le: '%s'. Go 'help'.\n", word);
+}
+
+void cmdTask(void* pv) {
+  char line[48];
+  size_t len = 0;
+  for (;;) {
+    pollHomeButton();
+    while (Serial.available()) {
+      char ch = (char)Serial.read();
+      if (ch == '\r' || ch == '\n') {
+        if (len > 0) {
+          line[len] = 0;
+          processLine(line);
+          len = 0;
+        }
+      } else if (len < sizeof(line) - 1) {
+        line[len++] = ch;
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
 }
 
 static char   txBuf[1460];
@@ -400,10 +674,16 @@ void commTask(void* pv) {
       flushTxBuffer();
       client.stop();
       Serial.println();
-      Serial.println("=============== SCAN COMPLETE ===============");
-      Serial.println("File complete on PC. Run xyz_to_stl.py to build the STL.");
+      if (s.aborted) {
+        Serial.println("=============== SCAN STOPPED ===============");
+        Serial.println("Quet bi dung giua chung. File tren PC chi co mot phan diem.");
+      } else {
+        Serial.println("=============== SCAN COMPLETE ===============");
+        Serial.println("File complete on PC. Run xyz_to_stl.py to build the STL.");
+      }
+      Serial.println("Chay lai pcrecieve.py truoc lan quet tiep theo.");
       Serial.println("=============================================");
-      vTaskDelete(NULL);
+      continue;   // khong xoa task -> quet duoc nhieu lan
     }
 
     float x = s.radiusMm * cos(s.angleRad);
@@ -425,8 +705,7 @@ void setup() {
   pinMode(PIN_Z_STEP,     OUTPUT);
   pinMode(PIN_Z_DIR,      OUTPUT);
   pinMode(PIN_Z_EN,       OUTPUT);
-  digitalWrite(PIN_TABLE_EN, LOW);
-  digitalWrite(PIN_Z_EN, LOW);
+  enableDrivers();
   pinMode(PIN_HOME_BUTTON, INPUT_PULLUP);
 
   tfLunaInit();
@@ -445,13 +724,15 @@ void setup() {
   connectToServer();
 
   rawQueue = xQueueCreate(QUEUE_LENGTH, sizeof(RawSample));
-  if (rawQueue == NULL) {
+  cmdQueue = xQueueCreate(8, sizeof(MotorCmd));
+  if (rawQueue == NULL || cmdQueue == NULL) {
     Serial.println("ERROR: cannot create queue.");
     while (true) delay(1000);
   }
 
   xTaskCreatePinnedToCore(commTask,  "comm",  8192, NULL, 1, NULL, CORE_COMM);
-  xTaskCreatePinnedToCore(motorTask, "motor", 4096, NULL, 3, NULL, CORE_REALTIME);
+  xTaskCreatePinnedToCore(cmdTask,   "cmd",   4096, NULL, 2, NULL, CORE_COMM);
+  xTaskCreatePinnedToCore(motorTask, "motor", 6144, NULL, 3, NULL, CORE_REALTIME);
 
   Serial.println("Dual-core pipeline started.");
 }

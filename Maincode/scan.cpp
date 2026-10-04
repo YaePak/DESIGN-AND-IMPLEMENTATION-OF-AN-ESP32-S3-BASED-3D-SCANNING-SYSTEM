@@ -27,10 +27,17 @@ HardwareSerial TFLunaSerial(1);
 const uint32_t TFLUNA_BAUD = 115200;
 const uint32_t TFLUNA_READ_TIMEOUT_MS = 50;
 
-const bool AUTO_CALIBRATE_STRENGTH     = true;
-const int  TFLUNA_DEFAULT_MIN_STRENGTH = 1000;
-const int  TFLUNA_STRENGTH_FLOOR       = 100;
-int g_minValidStrength = TFLUNA_DEFAULT_MIN_STRENGTH;
+const int   TFLUNA_STRENGTH_FLOOR     = 100;
+const int   TFLUNA_STRENGTH_SATURATED = 65535;
+const bool  FILTER_EDGE_OUTLIERS      = true;
+const float OUTLIER_DIST_MM           = 20.0;   // lech > 2 buoc do (TF-Luna 1 cm) so voi diem ke ben
+const float OUTLIER_WEAK_RATIO        = 0.7;    // va strength < 70% strength cua cac diem ke ben
+const int   OUTLIER_NEIGHBOURS        = 2;      // so diem ke ben moi phia dung de so sanh
+
+struct ScanStats {
+  long reads, readFail, weak, outOfRange, edgeRejected, kept;
+};
+ScanStats g_stats = {0, 0, 0, 0, 0, 0};
 
 const int   MOTOR_STEPS_PER_REV = 200;
 const int   MICROSTEPPING       = 16;
@@ -43,7 +50,7 @@ const int   STEPS_PER_SAMPLE = TOTAL_STEPS_PER_REV / STEPS_PER_REV;
 
 const float Z_LAYER_MM = 1.0;
 
-const float Z_TRAVEL_LIMIT_MM = 200.0;
+const float Z_TRAVEL_LIMIT_MM = 150.0; // gioi han truc Z
 
 const int   Z_STEPS_PER_LAYER = (int)((Z_LAYER_MM / LEAD_SCREW_PITCH_MM) * TOTAL_STEPS_PER_REV);
 
@@ -61,16 +68,6 @@ const int TABLE_DIR_LEVEL = HIGH;
 const int Z_UP_LEVEL      = HIGH;
 
 const int YIELD_EVERY_STEPS = 200;
-
-const int   CAL_TABLE_STEP_DEG     = 45;
-const float CAL_Z_STEP_MM          = 10.0;
-const int   CAL_READS_PER_STOP     = 5;
-const int   CAL_EMPTY_STOPS_TO_END = 2;
-const int   CAL_MIN_OBJ_SAMPLES    = 5;
-const int   CAL_MIN_BG_SAMPLES     = 3;
-const int   CAL_MAX_SAMPLES        = 200;
-const int   CAL_TABLE_STEPS = TOTAL_STEPS_PER_REV * CAL_TABLE_STEP_DEG / 360;
-const long  CAL_Z_STEPS     = (long)((CAL_Z_STEP_MM / LEAD_SCREW_PITCH_MM) * TOTAL_STEPS_PER_REV);
 
 const BaseType_t CORE_REALTIME = 1;
 const BaseType_t CORE_COMM     = 0;
@@ -170,21 +167,21 @@ bool readTFLunaRaw(int& distanceCm, int& strength) {
   return false;
 }
 
-float readDistanceCM() {
-  int dist, strength;
-  if (!readTFLunaRaw(dist, strength)) return -1.0;
-  if (strength < g_minValidStrength) return -1.0;
-  return (float)dist;
-}
+static bool g_driversOn = false;
 
 void enableDrivers() {
   digitalWrite(PIN_TABLE_EN, LOW);
   digitalWrite(PIN_Z_EN, LOW);
+  if (!g_driversOn) {
+    g_driversOn = true;
+    delay(5);
+  }
 }
 
 void disableDrivers() {
   digitalWrite(PIN_TABLE_EN, HIGH);
   digitalWrite(PIN_Z_EN, HIGH);
+  g_driversOn = false;
 }
 
 void raiseFault(FaultCode code, const char* detail) {
@@ -203,7 +200,9 @@ void stepPulse(int stepPin) {
 }
 
 bool rotateTableSteps(long steps) {
+  enableDrivers();
   digitalWrite(PIN_TABLE_DIR, TABLE_DIR_LEVEL);
+  delayMicroseconds(5);   // A4988: DIR on dinh truoc canh len STEP
   for (long i = 0; i < steps; i++) {
     if (g_abortRequested) {
       raiseFault(FAULT_USER_STOP, "khi dang quay ban xoay");
@@ -261,7 +260,9 @@ void printStatus() {
   Serial.printf("Vi tri Z  : %.2f mm (%ld xung)  %s\n", stepsToMm(g_zPosSteps), (long)g_zPosSteps,
                 g_zHomed ? "[da co z=0]" : "[CHUA co z=0 - nhan HOME khi Z o thap nhat]");
   Serial.printf("Gioi han  : 0 .. %.1f mm\n", Z_TRAVEL_LIMIT_MM);
-  Serial.printf("Strength  : %d\n", g_minValidStrength);
+  Serial.printf("Loc diem  : strength >= %d, bo lan mep %s (lech > %.0f mm va yeu < %.0f%%)\n",
+                TFLUNA_STRENGTH_FLOOR, FILTER_EDGE_OUTLIERS ? "BAT" : "TAT", OUTLIER_DIST_MM, OUTLIER_WEAK_RATIO * 100);
+  Serial.printf("Lan quet cuoi: giu %ld / %ld lan doc, bo lan mep %ld\n", g_stats.kept, g_stats.reads, g_stats.edgeRejected);
   Serial.println("----------------------");
 }
 
@@ -283,166 +284,84 @@ void printHelp() {
   Serial.println("-----------------------------------------------");
 }
 
-enum CalClass { CAL_UNUSABLE, CAL_OBJECT, CAL_BACKGROUND };
+static float    layerR[STEPS_PER_REV];   // ban kinh (mm) tung goc trong lop, < 0 = khong hop le
+static uint16_t layerS[STEPS_PER_REV];   // strength tung goc
 
-CalClass classifyReading(int distCm) {
-  if (distCm <= 0) return CAL_BACKGROUND;
-  float rMm = (DISTANCE_TO_CENTER_CM - distCm) * 10.0f;
-  if (rMm <= 0) return CAL_BACKGROUND;
-  if (rMm <= MAX_RADIUS_MM) return CAL_OBJECT;
-  return CAL_UNUSABLE;
-}
-
-struct CalResult {
-  bool ok;
-  bool separated;
-  int  objLow;
-  int  bgHigh;
-  int  threshold;
-  bool aborted;
-};
-
-static void sortInts(int* a, int n) {
+static float median4(float* v, int n) {   // n <= 2*OUTLIER_NEIGHBOURS
   for (int i = 1; i < n; i++) {
-    int v = a[i], j = i - 1;
-    while (j >= 0 && a[j] > v) { a[j + 1] = a[j]; j--; }
-    a[j + 1] = v;
+    float x = v[i]; int j = i - 1;
+    while (j >= 0 && v[j] > x) { v[j + 1] = v[j]; j--; }
+    v[j + 1] = x;
   }
+  return (n % 2) ? v[n / 2] : 0.5f * (v[n / 2 - 1] + v[n / 2]);
 }
 
-static int percentileInt(const int* sorted, int n, float p) {
-  return sorted[(int)(p * (n - 1))];
+float readSample(uint16_t& strengthOut) {
+  int dist, strength;
+  g_stats.reads++;
+  strengthOut = 0;
+  if (!readTFLunaRaw(dist, strength)) { g_stats.readFail++; return -1; }
+  strengthOut = (uint16_t)strength;
+  if (strength < TFLUNA_STRENGTH_FLOOR || strength >= TFLUNA_STRENGTH_SATURATED) { g_stats.weak++; return -1; }
+  float rMm = (DISTANCE_TO_CENTER_CM - dist) * 10.0f;
+  if (rMm <= 0 || rMm > MAX_RADIUS_MM) { g_stats.outOfRange++; return -1; }
+  return rMm;
 }
 
-CalResult computeStrengthThreshold(int* obj, int nObj, int* bg, int nBg) {
-  CalResult r = { false, false, 0, -1, TFLUNA_DEFAULT_MIN_STRENGTH, false };
-  if (nObj < CAL_MIN_OBJ_SAMPLES) return r;
-
-  sortInts(obj, nObj);
-  r.objLow = percentileInt(obj, nObj, 0.10f);
-  if (nBg >= CAL_MIN_BG_SAMPLES) {
-    sortInts(bg, nBg);
-    r.bgHigh = percentileInt(bg, nBg, 0.90f);
-  }
-
-  int thr;
-  if (r.bgHigh >= 0 && r.bgHigh < r.objLow) {
-    thr = (r.bgHigh + r.objLow) / 2;
-    r.separated = true;
-  } else {
-
-    thr = r.objLow / 2;
-  }
-  if (thr < TFLUNA_STRENGTH_FLOOR) thr = TFLUNA_STRENGTH_FLOOR;
-  r.threshold = thr;
-  r.ok = true;
-  return r;
-}
-
-static int calObj[CAL_MAX_SAMPLES];
-static int calBg[CAL_MAX_SAMPLES];
-
-CalResult calibrateStrength() {
-  Serial.println("[cal] Bat dau do nguong strength: quay 45 do -> nang Z 1cm, lap lai...");
-  int  nObj = 0, nBg = 0;
-  int  emptyStops = 0;
-
-  for (int stopIdx = 0; ; stopIdx++) {
-    float zMm = stopIdx * CAL_Z_STEP_MM;
-
-    int hits = 0;
-    for (int k = 0; k < CAL_READS_PER_STOP; k++) {
-      int dist, strength;
-      if (!readTFLunaRaw(dist, strength)) continue;
-      CalClass c = classifyReading(dist);
-      if (c == CAL_OBJECT) {
-        hits++;
-        if (nObj < CAL_MAX_SAMPLES) calObj[nObj++] = strength;
-      } else if (c == CAL_BACKGROUND) {
-        if (nBg < CAL_MAX_SAMPLES) calBg[nBg++] = strength;
-      }
+int rejectEdgeOutliers() {
+  if (!FILTER_EDGE_OUTLIERS) return 0;
+  static bool reject[STEPS_PER_REV];
+  int count = 0;
+  for (int i = 0; i < STEPS_PER_REV; i++) {
+    reject[i] = false;
+    if (layerR[i] < 0) continue;
+    float nr[2 * OUTLIER_NEIGHBOURS], ns[2 * OUTLIER_NEIGHBOURS];
+    int n = 0;
+    for (int d = -OUTLIER_NEIGHBOURS; d <= OUTLIER_NEIGHBOURS; d++) {
+      if (d == 0) continue;
+      int j = (i + d + STEPS_PER_REV) % STEPS_PER_REV;
+      if (layerR[j] < 0) continue;
+      nr[n] = layerR[j];
+      ns[n] = layerS[j];
+      n++;
     }
-    Serial.printf("[cal] z=%.0fmm: %d/%d mau trung vat\n", zMm, hits, CAL_READS_PER_STOP);
-
-    if (zMm >= Z_MIN_SCAN_MM) {
-      if (hits == 0) {
-        if (++emptyStops >= CAL_EMPTY_STOPS_TO_END) {
-          Serial.printf("[cal] Da qua dinh vat tai z=%.0fmm.\n", zMm);
-          break;
-        }
-      } else {
-        emptyStops = 0;
-      }
-    }
-
-    if ((stopIdx + 1) * CAL_Z_STEP_MM > Z_TRAVEL_LIMIT_MM) {
-      Serial.println("[cal] Toi gioi han hanh trinh Z, dung do.");
-      break;
-    }
-
-    if (!rotateTableSteps(CAL_TABLE_STEPS) || !moveZSteps(CAL_Z_STEPS, true)) {
-      Serial.println("[cal] HUY hieu chinh. May dung yen, KHONG tu ha Z.");
-      CalResult bad = { false, false, 0, -1, g_minValidStrength, true };
-      return bad;
+    if (n < 2) continue;                                 // khong du diem ke ben de danh gia -> giu
+    float rMed = median4(nr, n), sMed = median4(ns, n);
+    if (fabsf(layerR[i] - rMed) > OUTLIER_DIST_MM && layerS[i] < OUTLIER_WEAK_RATIO * sMed) {
+      reject[i] = true;
+      count++;
     }
   }
-
-  CalResult r = computeStrengthThreshold(calObj, nObj, calBg, nBg);
-
-  Serial.println();
-  Serial.println("========== KET QUA HIEU CHINH STRENGTH ==========");
-  Serial.printf("Mau trung vat: %d   Mau nen: %d\n", nObj, nBg);
-  if (!r.ok) {
-    Serial.printf("KHONG DU MAU TRUNG VAT (can >= %d). Dung nguong mac dinh %d.\n",
-                  CAL_MIN_OBJ_SAMPLES, TFLUNA_DEFAULT_MIN_STRENGTH);
-    Serial.println("  Kiem tra: vat co o giua ban xoay khong, DISTANCE_TO_CENTER_CM co dung khong.");
-  } else {
-    Serial.printf("Strength trung vat (muc thap): %d\n", r.objLow);
-    if (r.bgHigh >= 0) Serial.printf("Strength nen     (muc cao) : %d\n", r.bgHigh);
-    else               Serial.println("Strength nen: khong du mau (vat cao hon hanh trinh do?)");
-    if (r.separated) Serial.println("Vat va nen tach biet ro -> nguong = diem giua.");
-    else             Serial.println("Vat va nen KHONG tach biet ro -> nguong = 1/2 muc thap cua vat.");
-    Serial.printf(">>> TFLUNA_MIN_VALID_STRENGTH = %d\n", r.threshold);
-  }
-  Serial.println("=================================================");
-  g_minValidStrength = r.threshold;
-
-  Serial.printf("[cal] Dua truc Z ve z=0 (dang o %.1f mm)...\n", stepsToMm(g_zPosSteps));
-  if (!moveZToSteps(0)) {
-    r.aborted = true;
-    return r;
-  }
-  Serial.println("[cal] Da ve z=0.");
-  return r;
+  for (int i = 0; i < STEPS_PER_REV; i++) if (reject[i]) layerR[i] = -1;
+  return count;
 }
 
 bool runScan() {
-  Serial.println("[core1] Bat dau quet toa do tu z=0.");
+  Serial.println("[core1] Bat dau quet toa do tu z=0 (khong can vong hieu chinh rieng).");
   uint32_t startMs = millis();
   int  emptyLayers = 0;
   bool aborted     = false;
+  g_stats = {0, 0, 0, 0, 0, 0};
 
   for (int layer = 0; !aborted; layer++) {
     float z = layer * Z_LAYER_MM;
 
-    int validThisLayer = 0;
-    float angle = 0;
     for (int i = 0; i < STEPS_PER_REV; i++) {
-      float d = readDistanceCM();
-
-      if (d > 0) {
-        float rMm = (DISTANCE_TO_CENTER_CM - d) * 10.0f;
-        if (rMm > 0 && rMm <= MAX_RADIUS_MM) {
-          validThisLayer++;
-          RawSample s = { rMm, angle, z, false, false };
-          xQueueSend(rawQueue, &s, pdMS_TO_TICKS(5000));
-        }
-      }
-
-      angle += D_ANGLE;
+      layerR[i] = readSample(layerS[i]);
       if (!stepTurntable()) { aborted = true; break; }
     }
     if (aborted) break;
+
+    int rejected = rejectEdgeOutliers();
+    g_stats.edgeRejected += rejected;
+    int validThisLayer = 0;
+    for (int i = 0; i < STEPS_PER_REV; i++) {
+      if (layerR[i] < 0) continue;
+      validThisLayer++;
+      RawSample s = { layerR[i], i * D_ANGLE, z, false, false };
+      xQueueSend(rawQueue, &s, pdMS_TO_TICKS(5000));
+    }
+    g_stats.kept += validThisLayer;
 
     if (z >= Z_MIN_SCAN_MM) {
       if (validThisLayer == 0) {
@@ -463,10 +382,13 @@ bool runScan() {
     if (!stepZAxis()) { aborted = true; break; }
 
     if ((layer + 1) % 10 == 0) {
-      Serial.printf("[core1] layer %d done (z=%.0fmm), %lu s elapsed\n",
-                    layer + 1, z, (millis() - startMs) / 1000);
+      Serial.printf("[core1] layer %d done (z=%.0fmm), %lu s elapsed, lop nay: %d diem, bo %d diem lan mep\n",
+                    layer + 1, z, (millis() - startMs) / 1000, validThisLayer, rejected);
     }
   }
+  Serial.printf("[core1] Doc %ld lan: giu %ld, loi khung %ld, yeu/bao hoa %ld, ngoai vung %ld, lan mep %ld\n",
+                g_stats.reads, g_stats.kept, g_stats.readFail, g_stats.weak, g_stats.outOfRange, g_stats.edgeRejected);
+  Serial.printf("[core1] Thoi gian quet: %lu s\n", (millis() - startMs) / 1000);
 
   RawSample endMarker = { 0, 0, 0, true, aborted };
   xQueueSend(rawQueue, &endMarker, pdMS_TO_TICKS(2000));
@@ -502,12 +424,6 @@ void startScan() {
     if (!moveZToSteps(0)) return;
   }
 
-  if (AUTO_CALIBRATE_STRENGTH) {
-    CalResult c = calibrateStrength();
-    if (c.aborted) return;
-  } else {
-    Serial.printf("[cal] Bo qua hieu chinh, dung nguong mac dinh %d.\n", g_minValidStrength);
-  }
   runScan();
 }
 
@@ -552,7 +468,7 @@ void handleCommand(const MotorCmd& c) {
 
 void motorTask(void* pv) {
   Serial.println("Dat vat len GIUA ban xoay, ha truc Z xuong THAP NHAT (ngang mat ban xoay),");
-  Serial.println("roi nhan nut HOME (GPIO7). May se do nguong strength, tu ve z=0, roi moi quet.");
+  Serial.println("roi nhan nut HOME (GPIO7). May quet ngay tu z=0 (loc diem theo tung lop, khong can quet thu).");
   printHelp();
 
   for (;;) {

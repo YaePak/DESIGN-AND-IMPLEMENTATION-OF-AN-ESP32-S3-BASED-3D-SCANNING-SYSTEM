@@ -4,15 +4,15 @@
 
 The proposed system is designed as a **3D object scanning system** that collects distance measurements from an object's surface at different positions.
 
-The **ESP32-S3** acts as the main controller of the system. It controls the scanning process, communicates with the TF-Luna distance sensor, and generates control signals for the stepper motor driver.
+The **ESP32-S3** acts as the main controller. It manages the scanning process, reads the distance sensor's analog output, and generates control signals for the stepper motor drivers.
 
-The **Stepper Motor**, controlled through the **A4988 driver**, rotates the object or scanning platform by a predefined angle. The motor provides precise and repeatable movement, allowing measurements to be taken at multiple positions around the object.
+The **stepper motors**, controlled through **A4988 drivers**, rotate the scanning platform and move the sensor along the Z-axis. This allows measurements to be collected at different angular and vertical positions.
 
-At each scanning position, the **TF-Luna ToF (Time-of-Flight) LiDAR sensor** measures the distance between the sensor and the object's surface. The measured distance is transmitted digitally to the ESP32-S3.
+At each scanning position, the **GP2Y0A51SK0F infrared distance sensor** measures the distance to the object's surface and outputs an analog voltage corresponding to the measured distance. The ESP32-S3 reads this voltage through its ADC (Analog-to-Digital Converter) and converts it into a distance value using an appropriate calibration method.
 
-By combining the **distance measurement** with the corresponding **rotation angle**, the system can collect multiple points representing the surface of the object.
+By combining the measured distance with the corresponding angular and vertical positions, the system can collect data representing the object's surface.
 
-After completing one scanning cycle, the collected measurement data can be used for further processing and **3D reconstruction**, such as generating a **point cloud** of the scanned object.
+After completing a scanning cycle, the collected data can be processed to generate a **3D point cloud** for object reconstruction.
 
 ---
 
@@ -20,17 +20,18 @@ After completing one scanning cycle, the collected measurement data can be used 
 
 The system operates according to the following sequence:
 
-1. Initialize the ESP32-S3 and configure all required GPIO and communication interfaces.
-2. Initialize the TF-Luna distance sensor.
-3. Initialize the A4988 driver and stepper motor.
+1. Initialize the ESP32-S3 and configure the required GPIO pins and ADC.
+2. Initialize the GP2Y0A51SK0F infrared distance sensor interface.
+3. Initialize the A4988 drivers and stepper motors.
 4. Set the scanning mechanism to its initial position.
-5. Rotate the object or scanning platform by a predefined angular step.
-6. Stop or stabilize the motor at the current position.
-7. Measure the distance between the TF-Luna sensor and the object.
-8. Store the measured distance together with the corresponding scanning angle.
-9. Repeat the rotation and measurement process until a complete scanning cycle is finished.
-10. Collect all measurement data for further processing.
-11. Generate or transmit the collected data for **3D point cloud reconstruction**.
+5. Read the analog voltage from the distance sensor.
+6. Convert the ADC reading into a distance value using calibration data.
+7. Record the measured distance and the current scanning position.
+8. Rotate the scanning platform by a predefined angular step.
+9. Repeat the measurement process at each angular position.
+10. Move the sensor along the Z-axis and repeat the scanning process until all required positions have been measured.
+11. Collect the measurement data for further processing.
+12. Generate or transmit the data for **3D point cloud reconstruction**.
 
 ---
 
@@ -39,31 +40,37 @@ The system operates according to the following sequence:
 ```text
 Stepper Motor Movement
           ↓
-    Object Position
+Scanning Position (Angle + Z)
           ↓
-TF-Luna Distance Measurement
+GP2Y0A51SK0F Distance Measurement
           ↓
-       ESP32-S3
+Analog Voltage Output
           ↓
-Store Distance + Angle Data
+ESP32-S3 ADC Reading
           ↓
-     Repeat Scanning
+Distance Calibration
           ↓
-   Complete Scan Cycle
+Store Distance + Position Data
           ↓
-   Point Cloud Generation
+Repeat Scanning
           ↓
-   3D Object Reconstruction
+Complete Scan Cycle
+          ↓
+Point Cloud Generation
+          ↓
+3D Object Reconstruction
 ```
 
 ## 4. Scanning Principle
 
-The basic scanning principle is based on collecting distance information at multiple angular positions.
+The scanning principle is based on collecting distance measurements at multiple angular and vertical positions.
 
-For each position:
+At each scanning position:
 
-* The stepper motor determines the scanning angle.
-* The TF-Luna measures the distance to the object.
-* The ESP32-S3 stores the measurement data.
+- The stepper motors determine the scanning position.
+- The GP2Y0A51SK0F measures the distance to the object's surface and outputs an analog voltage.
+- The ESP32-S3 reads the analog voltage using its ADC.
+- A calibration function converts the ADC reading into a distance value.
+- The distance and corresponding scanning position are recorded.
 
-By repeating this process around the object, multiple surface points can be collected. These points can later be processed to represent the three-dimensional shape of the scanned object.
+By repeating this process across the scanning area, the system collects surface measurements that can be transformed into three-dimensional coordinates for further processing and visualization.

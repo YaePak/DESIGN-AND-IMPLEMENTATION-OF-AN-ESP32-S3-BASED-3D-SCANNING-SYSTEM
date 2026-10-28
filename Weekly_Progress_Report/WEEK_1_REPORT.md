@@ -61,6 +61,8 @@
 - Created the Front View of the mechanical model.
 - Created the Isometric View of the complete design.
 - Prepared the mechanical structure for further development and 3D printing.
+![Integrated Prototype](../3D-printed-frame/Isometric_View.png)
+
 
 ### Status
 

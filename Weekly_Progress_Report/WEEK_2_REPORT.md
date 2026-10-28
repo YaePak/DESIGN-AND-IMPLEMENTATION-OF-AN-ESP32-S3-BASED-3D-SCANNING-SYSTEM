@@ -14,6 +14,9 @@
 - Solder the components onto the PCB according to the circuit design.
 - Inspect the quality of the solder joints and the connections between the components and the PCB after soldering.
 - Perform an initial inspection and functional test of the PCB to ensure that it operates properly and is ready for system integration.
+![Integrated Prototype](../Electrical_Circuit/Prototype_PCB_1.jpg)
+![Integrated Prototype](../Electrical_Circuit/Prototype_PCB_2.jpg)
+
 
 ### Objectives
 

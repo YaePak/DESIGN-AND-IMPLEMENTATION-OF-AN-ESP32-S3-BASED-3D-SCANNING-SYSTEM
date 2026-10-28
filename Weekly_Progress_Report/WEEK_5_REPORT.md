@@ -12,6 +12,8 @@
 - The TF-Luna is accurate from 20 cm to 8 m, but in this setup the object is only about 3–10 cm from the sensor, which is below its minimum range. This causes large measurement errors and the distortion seen after scanning.
 - The height along Oz is not affected, because it is determined by the Z-axis position and not by the distance reading.
 
+![Integrated Prototype](../Demo_Results/Video_Before_Component_Calibration/Distorted_Result_Image_1.jpg)
+
 ## 3. Current Work and Next Steps
 
 - The team decided to replace the TF-Luna with the Sharp GP2Y0A51SK0F infrared distance sensor, whose 2–15 cm range matches the actual operating distance and should give a smaller error.

@@ -13,6 +13,10 @@
 - Relative to the real 60 mm edge, the deviation ranges from about −2.3% to +5.7%, so the measurement error does not exceed 10%.
 - The reconstructed shape is much closer to the real cube after the smoothing step.
 
+![Integrated Prototype](../Demo_Results/Video_After_Component_Calibration/Image_Result_after_Calibration.jpg)
+
+[![3D Scanner Demo](https://img.youtube.com/vi/GfAV5bEJ8As/0.jpg)](https://www.youtube.com/watch?v=GfAV5bEJ8As)
+
 ## 3. Remaining Limitations
 
 - The product still has some measurement deviation, which has been reduced but not eliminated.

@@ -13,7 +13,7 @@ The PCB is designed to integrate the main control and interface circuits of the 
 * Power distribution and filtering components
 * Motor and sensor connectors
 
-The PCB is designed using **EasyEDA**.
+The PCB is designed using **Proteus**.
 
 ---
 

@@ -1,5 +1,11 @@
 # 3D Scanner
 
+## Demo Video
+
+Click the thumbnail below to watch the 3D Scanner demonstration.
+
+[![3D Scanner Demo](https://img.youtube.com/vi/GfAV5bEJ8As/0.jpg)](https://www.youtube.com/watch?v=GfAV5bEJ8As)
+
 ## Project Overview
 
 This project focuses on the design and development of a low-cost, homemade 3D scanner using embedded hardware, an infrared distance sensor, stepper-motor control, and a custom mechanical structure.
@@ -45,8 +51,8 @@ flowchart TD
     L -- Yes --> F
     L -- No --> M{More Z positions?}
     M -- Yes --> N[Move carriage to next Z position]
-    N --> E
     M -- No --> O[Save scan data]
+    N --> E
     O --> P[Generate point cloud and reconstruct 3D model]
     P --> Q([Finish])
 ```

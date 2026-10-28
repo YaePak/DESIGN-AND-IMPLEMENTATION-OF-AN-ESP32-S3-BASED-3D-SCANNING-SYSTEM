@@ -9,7 +9,7 @@ The code is used to verify each component before integrating it into the main sy
 * ESP32-S3 GPIO
 * A4988 Turntable Motor
 * A4988 Z-axis Motor
-* TF-Luna Distance Sensor
+* Sharp GP2Y0A51SK0F Distance Sensor
 * Z-axis HOME Button
 * Status LED
 

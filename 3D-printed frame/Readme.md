@@ -1,6 +1,7 @@
 # 3D-Printed Frame
 
 ![Isometric View](Isometric_View.png)
+![Real View](khungscan.jpg)
 
 This folder contains the **3D-printable mechanical frame and structural components** developed for the **ESP32-S3-Based 3D Scanning System**.
 

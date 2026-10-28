@@ -1,4 +1,6 @@
-# Project Weekly Progress Roadmap
+# Task Allocation and Expected Completion Roadmap
+
+*(Subject to change during implementation depending on actual progress and encountered challenges.)*
 
 ## Project Title
 
